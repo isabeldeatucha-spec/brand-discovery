@@ -388,6 +388,70 @@ Return ONLY: {{"persona_name":"The X","description":"sentence"}}"""
     )
     return parse_obj(r.content[0].text.strip())
 
+def discover_brands_in_trend(trend: str, category: str, subcategory: str, api_key: str) -> list:
+    """Discover emerging brands in a specific trend/category."""
+    client = anthropic.Anthropic(api_key=api_key)
+
+    prompt = f"""You are a CPG brand scout. Discover emerging brands in this trend and return ONLY valid JSON array.
+
+TREND: {trend}
+CATEGORY: {category}
+SUBCATEGORY: {subcategory}
+
+Search for emerging brands that are gaining traction. Focus on brands that are broker-ready or close to it.
+
+Return ONLY JSON array of brand objects:
+[{{"brand_name":"Brand Name","website":"domain.com","description":"2-3 sentence description","stage":"early/emerging/growth","signals":"what makes this brand promising"}}]"""
+
+    msgs = [{"role": "user", "content": prompt}]
+    for _ in range(4):
+        r = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1500,
+            tools=[{"type": "web_search_20260209", "name": "web_search"}],
+            messages=msgs,
+        )
+        text = next((b.text for b in r.content if hasattr(b, "text") and b.type == "text"), "")
+        if text and "[" in text:
+            return parse_arr(text)
+        if r.stop_reason in ("end_turn",):
+            raise ValueError(f"Discovery ended but no JSON found. Raw: {text[:300]}")
+        elif r.stop_reason == "pause_turn":
+            msgs.append({"role": "assistant", "content": r.content})
+        else:
+            raise ValueError(f"Unexpected stop_reason '{r.stop_reason}'. Raw: {text[:300]}")
+
+def assess_broker_readiness(query: str, api_key: str) -> dict:
+    """Comprehensive broker-readiness assessment of a brand."""
+    client = anthropic.Anthropic(api_key=api_key)
+    ref = f"URL: {query}" if is_url_input(query) else f"Brand: {query}"
+
+    prompt = f"""You are a CPG broker analyst. Assess this brand's broker-readiness and return ONLY valid JSON.
+
+{ref}
+
+Assess: current distribution stage, POS count, retailers, distributors, pricing strategy, SKU variety, broker relationships, growth signals.
+
+{{"brand_name":"","broker_readiness_score":0,"distribution_stage":"","current_pos":0,"retailers":[],"distributors":[],"pricing_strategy":{},"sku_variety":[],"broker_relationships":[],"growth_signals":[],"recommendations":[]}}"""
+
+    msgs = [{"role": "user", "content": prompt}]
+    for _ in range(4):
+        r = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1500,
+            tools=[{"type": "web_search_20260209", "name": "web_search"}],
+            messages=msgs,
+        )
+        text = next((b.text for b in r.content if hasattr(b, "text") and b.type == "text"), "")
+        if text and "{" in text:
+            return parse_obj(text)
+        if r.stop_reason in ("end_turn",):
+            raise ValueError(f"Assessment ended but no JSON found. Raw: {text[:300]}")
+        elif r.stop_reason == "pause_turn":
+            msgs.append({"role": "assistant", "content": r.content})
+        else:
+            raise ValueError(f"Unexpected stop_reason '{r.stop_reason}'. Raw: {text[:300]}")
+
 # ── Scoring boosts ────────────────────────────────────────────────────────────
 
 def apply_intel_boosts(df: pd.DataFrame, intel: dict) -> pd.DataFrame:
@@ -451,10 +515,13 @@ def apply_persona_boosts(df: pd.DataFrame, selected: list, all_p: list) -> pd.Da
 # ── Session state ─────────────────────────────────────────────────────────────
 
 _def = {
+    "mode": None,  # "discover" or "assess"
     "intel": None, "research_error": "", "results_df": None, "banners_df": None,
     "banner_personas": {}, "brand_profile": {}, "autofill_income": (60_000, 150_000),
     "is_researching": False, "pending_query": "",
     "suggested_personas": [], "selected_personas": [],
+    "trend_query": "", "selected_category": "", "selected_subcategory": "",
+    "discovered_brands": [], "is_discovering": False,
 }
 for k, v in _def.items():
     if k not in st.session_state: st.session_state[k] = v
@@ -465,8 +532,8 @@ if st.session_state.is_researching:
     st.markdown("""
     <div class="loading-overlay">
       <div style="text-align:center">
-        <div class="thinking-word">Thinking<span class="thinking-dot">.</span><span class="thinking-dot">.</span><span class="thinking-dot">.</span></div>
-        <div class="thinking-sub">Pulling retail presence, distributors, pricing &amp; claims…</div>
+        <div class="thinking-word">Researching<span class="thinking-dot">.</span><span class="thinking-dot">.</span><span class="thinking-dot">.</span></div>
+        <div class="thinking-sub">Analyzing brand positioning and broker-readiness…</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -474,10 +541,10 @@ if st.session_state.is_researching:
     _key   = config.ANTHROPIC_API_KEY
     _query = st.session_state.pending_query
     try:
-        _intel = research_brand(_query, _key)
+        _intel = assess_broker_readiness(_query, _key)
         st.session_state.intel             = _intel
         st.session_state.research_error    = ""
-        st.session_state.autofill_income   = suggest_income(_intel.get("srp"))
+        st.session_state.autofill_income   = suggest_income(_intel.get("pricing_strategy", {}).get("srp"))
         st.session_state.results_df        = None
         st.session_state.banners_df        = None
         st.session_state.banner_personas   = {}
@@ -492,6 +559,31 @@ if st.session_state.is_researching:
     st.session_state.is_researching = False
     st.rerun()
 
+elif st.session_state.is_discovering:
+    st.markdown("""
+    <div class="loading-overlay">
+      <div style="text-align:center">
+        <div class="thinking-word">Discovering<span class="thinking-dot">.</span><span class="thinking-dot">.</span><span class="thinking-dot">.</span></div>
+        <div class="thinking-sub">Finding emerging brands in this trend…</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    _key = config.ANTHROPIC_API_KEY
+    _trend = st.session_state.trend_query
+    _cat = st.session_state.selected_category
+    _subcat = st.session_state.selected_subcategory
+    try:
+        _brands = discover_brands_in_trend(_trend, _cat, _subcat, _key)
+        st.session_state.discovered_brands = _brands
+        st.session_state.research_error = ""
+    except Exception as _e:
+        st.session_state.research_error = f"Discovery failed: {_e}"
+        st.session_state.discovered_brands = []
+
+    st.session_state.is_discovering = False
+    st.rerun()
+
 # ── Nav ───────────────────────────────────────────────────────────────────────
 
 st.markdown(
@@ -499,312 +591,248 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-intel = st.session_state.intel
-
 # ═══════════════════════════════════════════════════════════════════════════════
-# PHASE 1 — Brand lookup (search bar) or brand summary (after research)
+# LANDING PAGE — Mode Selection
 # ═══════════════════════════════════════════════════════════════════════════════
 
-with st.container(border=True):
+if not st.session_state.mode:
+    st.markdown(
+        '<h1 class="h1" style="color:#ffffff">Brand Discovery</h1>'
+        '<p class="sub">AI-powered tools for CPG brokers to discover emerging brands and assess broker-readiness.</p>',
+        unsafe_allow_html=True,
+    )
 
-    if not intel:
-        # ── Search state ──────────────────────────────────────────────────────
-        st.markdown(
-            '<h1 class="h1" style="color:#ffffff">Discover your next breakthrough brand.</h1>'
-            '<p class="sub">You\'ve spotted a promising brand. Let\'s analyze their market position, retail presence, and growth potential.</p>',
-            unsafe_allow_html=True,
-        )
+    col1, col2 = st.columns(2, gap="large")
 
-        qcol, bcol = st.columns([5, 1], gap="small")
-        with qcol:
-            query_input = st.text_input(
-                "brand", label_visibility="collapsed",
-                placeholder="yourwebsite.com  or  Brand Name",
-                key="query_input_field",
-            )
-        with bcol:
-            research_clicked = st.button("Research Brand", type="primary", use_container_width=True, key="research_btn")
+    with col1:
+        st.markdown("### 🌟 Discover Brands")
+        st.markdown("Find emerging brands in trending categories through intelligent web research.")
+        if st.button("Start Discovery", type="primary", use_container_width=True):
+            st.session_state.mode = "discover"
+            st.rerun()
 
-        if st.session_state.research_error:
-            st.error(st.session_state.research_error)
-
-        if research_clicked and query_input:
-            if not config.ANTHROPIC_API_KEY:
-                st.error("Set ANTHROPIC_API_KEY in your environment.")
-            else:
-                st.session_state.pending_query  = query_input
-                st.session_state.is_researching = True
-                st.rerun()
-
-    else:
-        # ── Post-research: brand summary only, no search bar ──────────────────
-        srp_v    = intel.get("srp")
-        srp_txt  = f"${srp_v:.2f}" if srp_v else "SRP unknown"
-        cat      = intel.get("category","")
-        subcat   = intel.get("subcategory","")
-        cat_full = f"{cat} · {subcat}" if subcat and subcat.lower() != cat.lower() else cat
-        founding = intel.get("founding_year")
-        funding  = intel.get("funding")
-        meta     = " · ".join(x for x in [f"Founded {founding}" if founding else "", funding or ""] if x)
-
-        claims   = intel.get("label_claims") or []
-        channels = intel.get("channel_focus") or []
-        dists    = intel.get("distributors") or []
-        retailers= intel.get("retail_presence") or []
-
-        ch_html = "".join(f'<span class="tag tg">{c}</span>' for c in claims[:7])
-        cn_html = "".join(f'<span class="tag tb">{c}</span>' for c in channels)
-        di_html = "".join(f'<span class="tag tp">{d}</span>' for d in dists)
-        re_html = "".join(f'<span class="tag ta">{r}</span>' for r in retailers[:6])
-
-        boosts = []
-        if "natural" in [c.lower() for c in channels]: boosts.append("natural channel")
-        if any(d.lower()=="unfi" for d in dists):       boosts.append("UNFI banners")
-        if any(d.lower()=="kehe" for d in dists):       boosts.append("KeHE banners")
-        if srp_v and srp_v > 8:                         boosts.append("high-income zips")
-        if srp_v and srp_v < 4:                         boosts.append("conventional/mass")
-        boost_html = f'<div class="boost-bar">⚡ Scoring boost active: {", ".join(boosts)}</div>' if boosts else ""
-
-        st.markdown(f"""
-        <div class="bcard">
-          <div class="bcard-header">
-            <div>
-              <div class="bcard-name">{intel.get("brand_name","")}</div>
-              <div class="bcard-meta">{cat_full}{(" · " + meta) if meta else ""}</div>
-            </div>
-            <div class="bcard-srp">{srp_txt}</div>
-          </div>
-          {"".join([
-            f'<div><div class="plabel">Label claims</div><div class="pill-row">{ch_html}</div></div>' if ch_html else "",
-            f'<div style="margin-top:.45rem"><div class="plabel">Channels</div><div class="pill-row">{cn_html}</div></div>' if cn_html else "",
-            f'<div style="margin-top:.45rem"><div class="plabel">Distributors</div><div class="pill-row">{di_html}</div></div>' if di_html else "",
-            f'<div style="margin-top:.45rem"><div class="plabel">Retail presence</div><div class="pill-row">{re_html}</div></div>' if re_html else "",
-          ])}
-          {boost_html}
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Reset link
-        if st.button("← Research a different brand", key="reset_btn"):
-            for k in ["intel","research_error","results_df","banners_df","banner_personas",
-                      "brand_profile","suggested_personas","selected_personas"]:
-                st.session_state[k] = None if k == "intel" else ([] if k in ["suggested_personas","selected_personas"] else ({} if k in ["banner_personas","brand_profile"] else ("" if k == "research_error" else None)))
+    with col2:
+        st.markdown("### 📊 Assess Readiness")
+        st.markdown("Evaluate how broker-ready a brand is - distribution, POS count, pricing, relationships.")
+        if st.button("Assess Brand", type="primary", use_container_width=True):
+            st.session_state.mode = "assess"
             st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PHASE 2 — Let's find your ideal retailers (only shown after research)
+# DISCOVERY MODE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-if intel:
+elif st.session_state.mode == "discover":
+    st.markdown(
+        '<h1 class="h1" style="color:#ffffff">Discover Emerging Brands</h1>'
+        '<p class="sub">Identify promising brands in trending categories.</p>',
+        unsafe_allow_html=True,
+    )
+
+    # Back button
+    if st.button("← Back to Home", key="back_discover"):
+        st.session_state.mode = None
+        st.session_state.discovered_brands = []
+        st.rerun()
+
     with st.container(border=True):
+        st.markdown("### Trend Analysis")
+
+        col1, col2 = st.columns([2, 1], gap="medium")
+        with col1:
+            trend_input = st.text_input(
+                "Trend", placeholder="e.g., 'protein is trending', 'plant-based growth', 'functional beverages'",
+                value=st.session_state.trend_query,
+                key="trend_input"
+            )
+        with col2:
+            category_options = ["Beverages", "Snacks", "Dairy", "Bakery", "Frozen", "Health & Wellness", "Other"]
+            selected_category = st.selectbox(
+                "Category", category_options,
+                index=category_options.index(st.session_state.selected_category) if st.session_state.selected_category in category_options else 0,
+                key="category_select"
+            )
+
+        subcategory_options = {
+            "Beverages": ["Energy Drinks", "Plant-Based Milk", "Functional Water", "Ready-to-Drink Coffee", "Kombucha", "Other"],
+            "Snacks": ["Protein Bars", "Nut Butters", "Dried Fruit", "Seaweed Snacks", "Other"],
+            "Dairy": ["Plant-Based Yogurt", "Functional Cheese", "Other"],
+            "Bakery": ["Protein Bread", "Gluten-Free", "Other"],
+            "Frozen": ["Plant-Based Meat", "Veggie Burgers", "Other"],
+            "Health & Wellness": ["Supplements", "Probiotics", "Other"],
+            "Other": ["Other"]
+        }
+
+        subcategory_list = subcategory_options.get(selected_category, ["Other"])
+        selected_subcategory = st.selectbox(
+            "Subcategory", subcategory_list,
+            index=subcategory_list.index(st.session_state.selected_subcategory) if st.session_state.selected_subcategory in subcategory_list else 0,
+            key="subcategory_select"
+        )
+
+        if st.button("Discover Brands", type="primary", use_container_width=True):
+            if not trend_input.strip():
+                st.error("Please enter a trend description.")
+            elif not config.ANTHROPIC_API_KEY:
+                st.error("Set ANTHROPIC_API_KEY in your environment.")
+            else:
+                st.session_state.trend_query = trend_input
+                st.session_state.selected_category = selected_category
+                st.session_state.selected_subcategory = selected_subcategory
+                st.session_state.is_discovering = True
+                st.rerun()
+
+    # Display discovered brands
+    if st.session_state.discovered_brands:
+        st.markdown("### 📋 Discovered Brands")
+
+        for i, brand in enumerate(st.session_state.discovered_brands):
+            with st.container(border=True):
+                col1, col2 = st.columns([3, 1], gap="medium")
+
+                with col1:
+                    st.markdown(f"#### {brand.get('brand_name', 'Unknown Brand')}")
+                    st.markdown(f"**Website:** {brand.get('website', 'N/A')}")
+                    st.markdown(f"**Stage:** {brand.get('stage', 'Unknown')}")
+                    st.markdown(f"**Description:** {brand.get('description', 'No description available')}")
+
+                    if brand.get('signals'):
+                        st.markdown(f"**Growth Signals:** {brand.get('signals')}")
+
+                with col2:
+                    if st.button(f"Assess Readiness", key=f"assess_{i}", use_container_width=True):
+                        st.session_state.mode = "assess"
+                        st.session_state.pending_query = brand.get('website', brand.get('brand_name', ''))
+                        st.session_state.is_researching = True
+                        st.rerun()
+
+    if st.session_state.research_error and st.session_state.mode == "discover":
+        st.error(st.session_state.research_error)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ASSESSMENT MODE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+elif st.session_state.mode == "assess":
+    intel = st.session_state.intel
+
+    # Back button
+    if st.button("← Back to Home", key="back_assess"):
+        st.session_state.mode = None
+        st.session_state.intel = None
+        st.session_state.discovered_brands = []
+        st.rerun()
+
+    if not intel:
+        # ── Brand input ──────────────────────────────────────────────────────
         st.markdown(
-            '<h1 class="h1" style="color:#ffffff">Analyze their market potential.</h1>'
-            '<p class="sub">Define the target consumer and we\'ll assess retail fit across 71,000 US grocery stores.</p>',
+            '<h1 class="h1" style="color:#ffffff">Assess Brand Readiness</h1>'
+            '<p class="sub">Evaluate how broker-ready a brand is across distribution, pricing, and relationships.</p>',
             unsafe_allow_html=True,
         )
 
-        # Persona descriptions grid (informational, above pills)
-        if st.session_state.suggested_personas:
-            cards_html = "".join(
-                f'<div class="persona-desc-card">'
-                f'<div class="persona-desc-label">{p["label"]}</div>'
-                f'<div class="persona-desc-text">{p.get("description","")}</div>'
-                f'</div>'
-                for p in st.session_state.suggested_personas
-            )
-            st.markdown(
-                f'<div class="plabel" style="margin-bottom:.5rem">Customer personas — select all that apply</div>'
-                f'<div class="persona-grid">{cards_html}</div>',
-                unsafe_allow_html=True,
+        with st.container(border=True):
+            query_input = st.text_input(
+                "brand", label_visibility="collapsed",
+                placeholder="brandwebsite.com  or  Brand Name",
+                key="query_input_field",
             )
 
-        with st.form("analysis_form"):
-            sc1, sc2 = st.columns([2, 1], gap="medium")
-            with sc1:
-                income_range = st.slider(
-                    "Income range ($)", 0, 250_000,
-                    st.session_state.autofill_income,
-                    step=5_000, format="$%d",
-                )
-            with sc2:
-                age_group = st.selectbox("Age group", list(AGE_GROUP_COLS.keys()), index=1)
+            if st.button("Assess Brand", type="primary", use_container_width=True):
+                if not query_input.strip():
+                    st.error("Please enter a brand name or website.")
+                elif not config.ANTHROPIC_API_KEY:
+                    st.error("Set ANTHROPIC_API_KEY in your environment.")
+                else:
+                    st.session_state.pending_query = query_input
+                    st.session_state.is_researching = True
+                    st.rerun()
 
-            if st.session_state.suggested_personas:
-                labels = [p["label"] for p in st.session_state.suggested_personas]
-                selected_in_form = st.pills(
-                    "Select personas",
-                    options=labels,
-                    selection_mode="multi",
-                    default=st.session_state.selected_personas or [],
-                )
-            else:
-                selected_in_form = []
+            if st.session_state.research_error:
+                st.error(st.session_state.research_error)
 
-            brand_name     = intel.get("brand_name", "")
-            brand_category = intel.get("category", "")
+    else:
+        # ── Assessment results ───────────────────────────────────────────────
+        readiness_score = intel.get("broker_readiness_score", 0)
+        score_color = "green" if readiness_score >= 80 else "yellow" if readiness_score >= 60 else "red"
 
-            submitted = st.form_submit_button("Analyze", type="primary", use_container_width=True)
+        st.markdown(
+            f'<h1 class="h1" style="color:#ffffff">Brand Assessment: {intel.get("brand_name", "Unknown")}</h1>'
+            f'<p class="sub">Broker-readiness score: <span style="color:#dc2626;font-weight:700">{readiness_score}/100</span></p>',
+            unsafe_allow_html=True,
+        )
 
-    if submitted:
-        st.session_state.selected_personas = selected_in_form or []
-        st.session_state.brand_profile = {"name": brand_name, "category": brand_category, "age_group": age_group}
+        # Readiness Overview
+        with st.container(border=True):
+            st.markdown("### 📊 Readiness Overview")
 
-        with st.spinner("Scoring stores…"):
-            df = load_data()
-            df["fit_score"] = score_stores(df, income_range[0], income_range[1], age_group)
-            df = apply_intel_boosts(df, intel)
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Distribution Stage", intel.get("distribution_stage", "Unknown"))
+            with col2:
+                st.metric("Current POS", f"{intel.get('current_pos', 0):,}")
+            with col3:
+                pricing = intel.get("pricing_strategy", {})
+                srp = pricing.get("srp", "N/A")
+                st.metric("SRP", f"${srp}" if isinstance(srp, (int, float)) else srp)
 
-            chosen = st.session_state.selected_personas
-            all_p  = st.session_state.suggested_personas
-            if chosen and all_p:
-                df = apply_persona_boosts(df, chosen, all_p)
+            # Retailers
+            retailers = intel.get("retailers", [])
+            if retailers:
+                st.markdown("**Current Retailers:**")
+                retailer_tags = "".join(f'<span class="tag ta">{r}</span>' for r in retailers[:8])
+                st.markdown(f'<div class="pill-row">{retailer_tags}</div>', unsafe_allow_html=True)
 
-            df["pct_18_24"] = df[["% Age | 18 and 19 years, 2025 [Estimated]",
-                                   "% Age | 20 to 24 years, 2025 [Estimated]"]].fillna(0).sum(axis=1)
-            df["pct_55_64"] = df["% Age | 55 to 64 years, 2025 [Estimated]"].fillna(0)
-            st.session_state.results_df = df
+            # Distributors
+            distributors = intel.get("distributors", [])
+            if distributors:
+                st.markdown("**Distributors:**")
+                dist_tags = "".join(f'<span class="tag tp">{d}</span>' for d in distributors)
+                st.markdown(f'<div class="pill-row">{dist_tags}</div>', unsafe_allow_html=True)
 
-            banners = (
-                df[df["banner_name"].notna() & (df["banner_name"] != "")]
-                .groupby("banner_name")
-                .agg(
-                    fit_score=("fit_score","mean"), fit_store_count=("fit_score",lambda x:(x>=70).sum()),
-                    total_stores=("fit_score","count"), median_income=("median_hh_income","median"),
-                    pct_bach=("pct_bachelors_plus","mean"), pct_owner=("pct_owner_occupied","mean"),
-                    pct_married=("pct_married_couple","mean"),
-                    pct_18_24=("pct_18_24","mean"), pct_age_25_34=("pct_age_25_34","mean"),
-                    pct_age_35_44=("pct_age_35_44","mean"), pct_age_45_54=("pct_age_45_54","mean"),
-                    pct_55_64=("pct_55_64","mean"), pct_age_65_plus=("pct_age_65_plus","mean"),
-                    already_present=("already_present","any"), boosted=("boosted","any"),
-                )
-                .reset_index().sort_values("fit_score", ascending=False)
-            )
-            st.session_state.banners_df    = banners
-            st.session_state.banner_personas = {}
+        # SKU Variety & Pricing
+        with st.container(border=True):
+            st.markdown("### 🏷️ Product Portfolio")
 
-# ── Results ───────────────────────────────────────────────────────────────────
+            sku_variety = intel.get("sku_variety", [])
+            if sku_variety:
+                st.markdown("**SKU Variety:**")
+                sku_tags = "".join(f'<span class="tag tg">{sku}</span>' for sku in sku_variety[:10])
+                st.markdown(f'<div class="pill-row">{sku_tags}</div>', unsafe_allow_html=True)
 
-results = st.session_state.results_df
-banners = st.session_state.banners_df
+            pricing_details = intel.get("pricing_strategy", {})
+            if pricing_details:
+                st.markdown("**Pricing Strategy:**")
+                for channel, price in pricing_details.items():
+                    if channel != "srp" and isinstance(price, (int, float)):
+                        st.markdown(f"- **{channel.title()}:** ${price}")
 
-if results is not None:
-    st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
+        # Broker Relationships & Growth
+        with st.container(border=True):
+            st.markdown("### 🤝 Broker Intelligence")
 
-    m1, m2, m3, m4 = st.columns(4)
-    pct = int(results["already_present"].sum()) if "already_present" in results.columns else 0
-    m1.metric("Stores scored",    f"{len(results):,}")
-    m2.metric("Strong fit (≥80)", f"{(results['fit_score']>=80).sum():,}")
-    m3.metric("Good fit (≥60)",   f"{(results['fit_score']>=60).sum():,}")
-    m4.metric("Already present" if pct else "Avg score",
-              f"{pct:,} stores" if pct else f"{results['fit_score'].mean():.1f}")
+            relationships = intel.get("broker_relationships", [])
+            if relationships:
+                st.markdown("**Current Broker Relationships:**")
+                for rel in relationships:
+                    st.markdown(f"- {rel}")
 
-    st.markdown("<div style='height:.75rem'></div>", unsafe_allow_html=True)
+            signals = intel.get("growth_signals", [])
+            if signals:
+                st.markdown("**Growth Signals:**")
+                for signal in signals:
+                    st.markdown(f"- {signal}")
 
-    lc, rc = st.columns([1, 1.6], gap="large")
+        # Recommendations
+        recommendations = intel.get("recommendations", [])
+        if recommendations:
+            with st.container(border=True):
+                st.markdown("### 💡 Recommendations")
+                for rec in recommendations:
+                    st.markdown(f"- {rec}")
 
-    with lc:
-        st.markdown('<div class="stitle">Banner Ranking</div>', unsafe_allow_html=True)
-        for _, row in banners.head(10).iterrows():
-            s_val   = round(row["fit_score"], 1)
-            is_p    = bool(row.get("already_present", False))
-            is_b    = bool(row.get("boosted", False)) and not is_p
-            income  = f"${row['median_income']:,.0f}" if pd.notna(row["median_income"]) else "—"
-            bach    = f"{row['pct_bach']:.0f}% bach+" if pd.notna(row["pct_bach"]) else "—"
-            fits    = f"{int(row['fit_store_count'])} fit stores"
-            extra   = ('<span class="bpp">Already present</span>' if is_p else
-                       '<span class="bpb">⚡ Boosted</span>' if is_b else "")
-            if is_p:  card, circ, disp = "banner-card-present", "sc-gray", "✓"
-            else:     card, circ, disp = "banner-card", f"sc-{sc(s_val)}", f"{s_val:.0f}"
-            st.markdown(f"""
-            <div class="{card}">
-              <div class="score-circle {circ}">{disp}</div>
-              <div class="banner-info">
-                <div class="banner-name">{row['banner_name']}</div>
-                <div class="bpills"><span class="bp">{income}</span><span class="bp">{bach}</span><span class="bp">{fits}</span>{extra}</div>
-              </div>
-            </div>""", unsafe_allow_html=True)
-
-    with rc:
-        st.markdown('<div class="stitle">Top Stores</div>', unsafe_allow_html=True)
-        top = results.nlargest(50, "fit_score")[
-            ["store_name","banner_name","city","state","fit_score","median_hh_income","already_present","boosted"]
-        ].copy()
-        rows_html = ""
-        for _, r in top.iterrows():
-            sv      = r["fit_score"]
-            is_p    = bool(r.get("already_present", False))
-            income  = f"${r['median_hh_income']:,.0f}" if pd.notna(r["median_hh_income"]) else "—"
-            banner  = r["banner_name"] if pd.notna(r["banner_name"]) else "—"
-            if is_p: badge = '<span class="sb sb-p">Present</span>'
-            else:    badge = f'<span class="sb sb-{sc(sv)[0]}">{sv:.0f}{"⚡" if r.get("boosted") else ""}</span>'
-            rows_html += f"<tr><td><strong>{r['store_name']}</strong></td><td style='color:#555'>{banner}</td><td>{r['city']}</td><td>{r['state']}</td><td>{income}</td><td>{badge}</td></tr>"
-        st.markdown(f"""<table class="store-table"><thead><tr>
-          <th>Store</th><th>Banner</th><th>City</th><th>State</th><th>Med. Income</th><th>Score</th>
-        </tr></thead><tbody>{rows_html}</tbody></table>""", unsafe_allow_html=True)
-
-    # ── Shopper Personas by Banner ────────────────────────────────────────────
-    st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
-    st.markdown('<div class="stitle">Shopper Personas by Banner</div>', unsafe_allow_html=True)
-
-    api_key = config.ANTHROPIC_API_KEY
-    top10   = banners.head(10)
-    missing = [r["banner_name"] for _, r in top10.iterrows()
-               if r["banner_name"] not in st.session_state.banner_personas]
-
-    if missing and api_key:
-        bp  = st.session_state.brand_profile
-        prg = st.progress(0, text="Generating personas…")
-        for i, bn in enumerate(missing):
-            prg.progress(i / len(missing), text=f"Generating persona for {bn}…")
-            row  = top10[top10["banner_name"] == bn].iloc[0]
-            demo = {
-                "median_income": row["median_income"] if pd.notna(row["median_income"]) else 75000,
-                "dominant_age":  dominant_age(row.to_dict()),
-                "pct_bach":      row["pct_bach"] if pd.notna(row["pct_bach"]) else 30,
-                "pct_owner":     row["pct_owner"] if pd.notna(row["pct_owner"]) else 60,
-                "pct_married":   row["pct_married"] if pd.notna(row["pct_married"]) else 50,
-            }
-            try:
-                p = generate_banner_persona(bn, demo, bp.get("name",""), bp.get("category",""), api_key)
-                st.session_state.banner_personas[bn] = {**p, **demo, "fit_score": round(row["fit_score"],1)}
-            except Exception as e:
-                st.session_state.banner_personas[bn] = {
-                    "persona_name":"Unknown Shopper","description":f"Could not generate: {e}",
-                    **demo,"fit_score":round(row["fit_score"],1),
-                }
-            if i < len(missing)-1: time.sleep(0.2)
-        prg.progress(1.0); time.sleep(0.2); prg.empty()
-    elif missing and not api_key:
-        st.warning("Set ANTHROPIC_API_KEY to generate personas.")
-
-    pts = [(bn, st.session_state.banner_personas[bn])
-           for _, row in top10.iterrows()
-           for bn in [row["banner_name"]]
-           if bn in st.session_state.banner_personas]
-
-    for i in range(0, len(pts), 2):
-        cols = st.columns(2, gap="medium")
-        for j, col in enumerate(cols):
-            if i+j >= len(pts): break
-            bn, p = pts[i+j]
-            color    = sc(p["fit_score"])
-            lc_color = logo_color(bn)
-            fl       = {"green":"Strong fit","yellow":"Moderate fit","red":"Weak fit"}[color]
-            fb       = {"green":"#22c55e","yellow":"#eab308","red":"#ef4444"}[color]
-            with col:
-                st.markdown(f"""
-                <div class="persona-result-card">
-                  <div class="pr-header">
-                    <div style="display:flex;align-items:center">
-                      <div class="pr-logo" style="background:{lc_color}">{bn[0].upper()}</div>
-                      <div><div class="pr-banner">{bn}</div><div class="pr-pname">{p['persona_name']}</div></div>
-                    </div>
-                    <span class="fit-badge" style="background:{fb}">{fl} · {p['fit_score']:.0f}</span>
-                  </div>
-                  <div class="bpills">
-                    <span class="bp">${p['median_income']:,.0f}</span>
-                    <span class="bp">{p['dominant_age']}</span>
-                    <span class="bp">{p['pct_bach']:.0f}% bach+</span>
-                  </div>
-                  <div class="pr-desc">{p['description']}</div>
-                </div>""", unsafe_allow_html=True)
+        # Reset
+        if st.button("Assess Different Brand", key="reset_assess"):
+            st.session_state.intel = None
+            st.session_state.pending_query = ""
+            st.rerun()

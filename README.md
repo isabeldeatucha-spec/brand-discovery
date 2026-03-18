@@ -1,15 +1,36 @@
 # Brand Discovery
 
-AI-powered retail intelligence for identifying promising CPG brands and assessing their market potential.
+AI-powered tools for CPG brokers to discover emerging brands and assess broker-readiness.
 
 ## Overview
 
-Brand Discovery helps you:
-- **Research brands** automatically from websites or names
-- **Analyze market positioning** and competitive landscape
-- **Assess retail readiness** and growth potential
-- **Identify target consumers** and demographic fit
-- **Evaluate distribution opportunities** across 71,000+ US stores
+Brand Discovery helps CPG brokers in two key ways:
+
+### 🌟 Brand Discovery
+- **Trend Analysis**: Input market trends and discover emerging brands
+- **Category Exploration**: Select categories and subcategories to focus research
+- **Intelligent Scraping**: AI-powered web research to find promising brands
+
+### 📊 Broker Readiness Assessment
+- **Distribution Analysis**: Current POS count, retailers, and channels
+- **SKU Intelligence**: Product variety, claims, and pricing strategies
+- **Relationship Mapping**: Existing broker and distributor partnerships
+- **Growth Signals**: Market momentum and scalability indicators
+
+## Features
+
+### Brand Discovery
+- Trend-based brand identification
+- Category and subcategory filtering
+- Emerging brand scouting
+- Growth signal analysis
+
+### Broker Readiness Assessment
+- Comprehensive distribution mapping
+- SKU portfolio analysis
+- Pricing strategy evaluation
+- Broker relationship intelligence
+- Market readiness scoring
 
 ## Quick Start
 
@@ -28,47 +49,26 @@ Brand Discovery helps you:
    streamlit run app.py
    ```
 
-## Features
-
-### Brand Research
-- Automatic web research for brand profiles
-- Category classification and subcategory analysis
-- Pricing strategy and SRP identification
-- Distributor and retail presence mapping
-- Label claims and positioning analysis
-
-### Market Analysis
-- Consumer persona generation
-- Demographic targeting assessment
-- Store fit scoring across multiple banners
-- Growth potential evaluation
-- Competitive advantage identification
-
-### Retail Intelligence
-- 71,000+ US grocery store database
-- Trade area demographic analysis
-- Banner-specific shopper personas
-- Distribution channel recommendations
-
 ## Usage
 
-### Web Interface
-Paste a brand website or name to start research, then define target consumers to see retail fit analysis.
+### Discovery Mode
+1. Click "Start Discovery"
+2. Enter a market trend (e.g., "protein is trending")
+3. Select category and subcategory
+4. Review discovered brands
+5. Click "Assess Readiness" on promising brands
 
-### Command Line
-```bash
-# Analyze a single brand
-python run.py try --brand "Brand Name" --category "category"
-
-# Batch analyze multiple brands
-python run.py batch --pairs pairs/sample.csv
-```
+### Assessment Mode
+1. Click "Assess Brand"
+2. Enter brand name or website
+3. Review comprehensive broker-readiness analysis
 
 ## Data Sources
 
-- Store data: Enriched with demographic and sales information
-- Brand research: Real-time web scraping and analysis
-- Market intelligence: Consumer trends and retail dynamics
+- Real-time web research and scraping
+- Brand intelligence from multiple sources
+- Distribution and retail presence data
+- Market trend analysis
 
 ## Requirements
 
