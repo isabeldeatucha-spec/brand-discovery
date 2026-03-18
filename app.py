@@ -9,6 +9,33 @@ import streamlit as st
 
 from src import config
 
+# Models to try in order. If the configured model is unavailable, we fall back.
+FALLBACK_MODELS = [
+    config.ANTHROPIC_MODEL,
+    "claude-2",
+    "claude-3",
+    "claude-sonnet-4-6",
+    "claude-instant-1",
+]
+
+
+def create_message_with_fallback(client, **kwargs):
+    """Call Anthropic and fall back to alternative models if needed."""
+    last_exc = None
+    for model in FALLBACK_MODELS:
+        if not model:
+            continue
+        try:
+            return client.messages.create(model=model, **kwargs)
+        except Exception as e:
+            last_exc = e
+            msg = str(e).lower()
+            if "not_found_error" in msg or "model:" in msg:
+                # try next model
+                continue
+            raise
+    raise last_exc or RuntimeError("Failed to create message with any model")
+
 # ── Page config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
@@ -331,6 +358,7 @@ def dominant_age(row):
 
 # ── API – token-efficient ─────────────────────────────────────────────────────
 
+@st.cache_data(show_spinner=False)
 def research_brand(query: str, api_key: str) -> dict:
     """Works with URL or brand name. Limits to 2 web searches for speed."""
     client = anthropic.Anthropic(api_key=api_key)
@@ -345,23 +373,39 @@ Search for: brand category, SRP/pricing, retail accounts, distributors (UNFI/KeH
 {{"brand_name":"","category":"","subcategory":"","retail_presence":[],"distributors":[],"channel_focus":[],"srp":0.0,"pack_sizes":"","label_claims":[],"founding_year":null,"funding":null}}"""
 
     msgs = [{"role": "user", "content": prompt}]
-    for _ in range(4):
-        r = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
+    for _ in range(2):
+        r = create_message_with_fallback(
+            client,
+            max_tokens=config.ANTHROPIC_MAX_TOKENS,
             tools=[{"type": "web_search_20260209", "name": "web_search"}],
             messages=msgs,
         )
         # Try to extract text from any response — model may write JSON even on pause_turn
         text = next((b.text for b in r.content if hasattr(b, "text") and b.type == "text"), "")
         if text and "{" in text:
-            return parse_obj(text)
+            try:
+                return parse_obj(text)
+            except Exception:
+                pass
+
         if r.stop_reason in ("end_turn",):
-            raise ValueError(f"Research ended but no JSON found. Raw: {text[:300]}")
+            raise ValueError(f"Research ended but no JSON found. Raw: {text[:400]}")
         elif r.stop_reason == "pause_turn":
             msgs.append({"role": "assistant", "content": r.content})
+        elif r.stop_reason == "max_tokens":
+            try:
+                parsed = parse_obj(text)
+                parsed["_truncated"] = True
+                parsed["_note"] = "Response was truncated due to token limits. Increase ANTHROPIC_MAX_TOKENS to get more detail."
+                return parsed
+            except Exception:
+                return {
+                    "_truncated": True,
+                    "_note": "Response was truncated due to token limits. Increase ANTHROPIC_MAX_TOKENS to get more detail.",
+                    "_raw_partial": text[:1000],
+                }
         else:
-            raise ValueError(f"Unexpected stop_reason '{r.stop_reason}'. Raw: {text[:300]}")
+            raise ValueError(f"Unexpected stop_reason '{r.stop_reason}'. Raw: {text[:400]}")
 
 def suggest_personas(intel: dict, api_key: str) -> list:
     """4 personas with labels + 1-line descriptions. Uses Haiku."""
@@ -388,6 +432,7 @@ Return ONLY: {{"persona_name":"The X","description":"sentence"}}"""
     )
     return parse_obj(r.content[0].text.strip())
 
+@st.cache_data(show_spinner=False)
 def discover_brands_in_trend(trend: str, category: str, subcategory: str, api_key: str) -> list:
     """Discover emerging brands in a specific trend/category."""
     client = anthropic.Anthropic(api_key=api_key)
@@ -404,23 +449,39 @@ Return ONLY JSON array of brand objects:
 [{{"brand_name":"Brand Name","website":"domain.com","description":"2-3 sentence description","stage":"early/emerging/growth","signals":"what makes this brand promising"}}]"""
 
     msgs = [{"role": "user", "content": prompt}]
-    for _ in range(4):
-        r = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1500,
+    for _ in range(2):
+        r = create_message_with_fallback(
+            client,
+            max_tokens=config.ANTHROPIC_MAX_TOKENS,
             tools=[{"type": "web_search_20260209", "name": "web_search"}],
             messages=msgs,
         )
         text = next((b.text for b in r.content if hasattr(b, "text") and b.type == "text"), "")
         if text and "[" in text:
-            return parse_arr(text)
+            try:
+                return parse_arr(text)
+            except Exception:
+                pass
         if r.stop_reason in ("end_turn",):
-            raise ValueError(f"Discovery ended but no JSON found. Raw: {text[:300]}")
+            raise ValueError(f"Discovery ended but no JSON found. Raw: {text[:400]}")
         elif r.stop_reason == "pause_turn":
             msgs.append({"role": "assistant", "content": r.content})
+        elif r.stop_reason == "max_tokens":
+            try:
+                parsed = parse_arr(text)
+                if isinstance(parsed, list):
+                    return {"_truncated": True, "_results": parsed, "_note": "Response was truncated due to token limits. Increase ANTHROPIC_MAX_TOKENS to get more results."}
+            except Exception:
+                pass
+            return {
+                "_truncated": True,
+                "_note": "Response was truncated due to token limits. Increase ANTHROPIC_MAX_TOKENS to get more results.",
+                "_raw_partial": text[:1000],
+            }
         else:
-            raise ValueError(f"Unexpected stop_reason '{r.stop_reason}'. Raw: {text[:300]}")
+            raise ValueError(f"Unexpected stop_reason '{r.stop_reason}'. Raw: {text[:400]}")
 
+@st.cache_data(show_spinner=False)
 def assess_broker_readiness(query: str, api_key: str) -> dict:
     """Comprehensive broker-readiness assessment of a brand."""
     client = anthropic.Anthropic(api_key=api_key)
@@ -435,22 +496,38 @@ Assess: current distribution stage, POS count, retailers, distributors, pricing 
 {{"brand_name":"","broker_readiness_score":0,"distribution_stage":"","current_pos":0,"retailers":[],"distributors":[],"pricing_strategy":{{}},"sku_variety":[],"broker_relationships":[],"growth_signals":[],"recommendations":[]}}"""
 
     msgs = [{"role": "user", "content": prompt}]
-    for _ in range(4):
-        r = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1500,
+    for _ in range(2):
+        r = create_message_with_fallback(
+            client,
+            max_tokens=config.ANTHROPIC_MAX_TOKENS,
             tools=[{"type": "web_search_20260209", "name": "web_search"}],
             messages=msgs,
         )
         text = next((b.text for b in r.content if hasattr(b, "text") and b.type == "text"), "")
         if text and "{" in text:
-            return parse_obj(text)
+            try:
+                return parse_obj(text)
+            except Exception:
+                pass
         if r.stop_reason in ("end_turn",):
-            raise ValueError(f"Assessment ended but no JSON found. Raw: {text[:300]}")
+            raise ValueError(f"Assessment ended but no JSON found. Raw: {text[:400]}")
         elif r.stop_reason == "pause_turn":
             msgs.append({"role": "assistant", "content": r.content})
+        elif r.stop_reason == "max_tokens":
+            # Model hit token limit. Return whatever we got so the UI can show partial data.
+            try:
+                parsed = parse_obj(text)
+                parsed["_truncated"] = True
+                parsed["_note"] = "Response was truncated due to token limits. Increase ANTHROPIC_MAX_TOKENS to get more detail."
+                return parsed
+            except Exception:
+                return {
+                    "_truncated": True,
+                    "_note": "Response was truncated due to token limits. Increase ANTHROPIC_MAX_TOKENS to get more detail.",
+                    "_raw_partial": text[:1000],
+                }
         else:
-            raise ValueError(f"Unexpected stop_reason '{r.stop_reason}'. Raw: {text[:300]}")
+            raise ValueError(f"Unexpected stop_reason '{r.stop_reason}'. Raw: {text[:400]}")
 
 # ── Scoring boosts ────────────────────────────────────────────────────────────
 
