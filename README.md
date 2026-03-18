@@ -77,6 +77,22 @@ Brand Discovery helps CPG brokers in two key ways:
 - Streamlit for web interface
 - Pandas for data analysis
 
+## Cost Control (Tokens)
+
+This app uses Anthropic via API calls, which consume tokens. To keep costs low:
+
+- Use a lower-cost model by setting `ANTHROPIC_MODEL` (default is `claude-3`)
+- Keep prompts short and focused
+- Re-run the app without repeatedly re-submitting the same brand
+- Set a lower token limit via `ANTHROPIC_MAX_TOKENS` (default: 800)
+
+If you see a "model not found" error, set `ANTHROPIC_MODEL` to one of the models you have access to (e.g. `claude-2`, `claude-3`, `claude-sonnet-4-6`).
+
+Example:
+```bash
+export ANTHROPIC_MODEL=claude-3
+export ANTHROPIC_MAX_TOKENS=600
+```
 ## License
 
 [Your License Here]

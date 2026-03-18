@@ -1,7 +1,16 @@
 import os
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-MODEL = "claude-opus-4-6"
+
+# Choose a model for responses. Override with the env var if needed.
+# (If you get "model not found", use a model you have access to; e.g. "claude-3", "claude-2", or "claude-sonnet-4-6".)
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-3")
+
+# Token limits (reduce to control cost)
+ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "800"))
+
+# Backwards compatibility (old code may still use MODEL)
+MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-6")
 
 SYSTEM_PROMPT = """You are Brand Discovery, an AI retail intelligence analyst. You help identify promising CPG brands and assess their market potential, retail positioning, and growth opportunities.
 
