@@ -12,7 +12,7 @@ from src import config
 # ── Page config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="Sedge — Retailer Matching",
+    page_title="Brand Discovery — AI Retail Intelligence",
     page_icon="🌿",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -510,8 +510,8 @@ with st.container(border=True):
     if not intel:
         # ── Search state ──────────────────────────────────────────────────────
         st.markdown(
-            '<h1 class="h1" style="color:#ffffff">Let\'s get to know your brand.</h1>'
-            '<p class="sub">You just identified a new brand. Paste their website or type their name — we\'ll pull their full retail profile.</p>',
+            '<h1 class="h1" style="color:#ffffff">Discover your next breakthrough brand.</h1>'
+            '<p class="sub">You\'ve spotted a promising brand. Let\'s analyze their market position, retail presence, and growth potential.</p>',
             unsafe_allow_html=True,
         )
 
@@ -598,8 +598,8 @@ with st.container(border=True):
 if intel:
     with st.container(border=True):
         st.markdown(
-            '<h1 class="h1" style="color:#ffffff">Let\'s find their ideal retailers.</h1>'
-            '<p class="sub">Define the target consumer and we\'ll rank 71,000 US grocery stores by fit.</p>',
+            '<h1 class="h1" style="color:#ffffff">Analyze their market potential.</h1>'
+            '<p class="sub">Define the target consumer and we\'ll assess retail fit across 71,000 US grocery stores.</p>',
             unsafe_allow_html=True,
         )
 

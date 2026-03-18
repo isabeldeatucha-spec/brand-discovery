@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Sedge — AI Retail Broker Analyst
+# Brand Discovery — AI Retail Intelligence
 
 Commands
 --------
-try     Analyze a single brand-retailer pair from CLI args
-batch   Analyze all pairs in a CSV file, save results to output/
+try     Analyze a single brand from CLI args
+batch   Analyze all brands in a CSV file, save results to output/
 
 Examples
 --------
