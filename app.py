@@ -432,7 +432,7 @@ def assess_broker_readiness(query: str, api_key: str) -> dict:
 
 Assess: current distribution stage, POS count, retailers, distributors, pricing strategy, SKU variety, broker relationships, growth signals.
 
-{{"brand_name":"","broker_readiness_score":0,"distribution_stage":"","current_pos":0,"retailers":[],"distributors":[],"pricing_strategy":{},"sku_variety":[],"broker_relationships":[],"growth_signals":[],"recommendations":[]}}"""
+{{"brand_name":"","broker_readiness_score":0,"distribution_stage":"","current_pos":0,"retailers":[],"distributors":[],"pricing_strategy":{{}},"sku_variety":[],"broker_relationships":[],"growth_signals":[],"recommendations":[]}}"""
 
     msgs = [{"role": "user", "content": prompt}]
     for _ in range(4):
